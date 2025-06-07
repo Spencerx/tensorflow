@@ -28,6 +28,7 @@ package_group(
         "//third_party/gxlang/...",
         "//third_party/openxla_pjrt_plugin/...",
         "//third_party/py/jax/...",
+        "//third_party/torch_tpu/...",
     ],
 )
 
@@ -721,6 +722,7 @@ cc_library(
         "//xla/service/spmd/shardy:constants",
         "//xla/service/spmd/shardy:utils",
         "//xla/service/spmd/shardy/sdy_round_trip:pipelines",
+        "//xla/service/spmd/shardy/stablehlo_round_trip:stablehlo_export",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -895,11 +897,11 @@ xla_cc_test(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@com_google_googletest//:gtest_main",
         "@eigen_archive//:eigen3",
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:statusor",
         "@local_tsl//tsl/platform:test_benchmark",
+        "@local_tsl//tsl/platform:test_main",
     ],
 )
 
