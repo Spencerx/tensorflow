@@ -33,6 +33,7 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "xla/layout.h"
@@ -46,6 +47,7 @@ limitations under the License.
 #include "xla/tsl/concurrency/ref_count.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/casts.h"
 #include "tsl/profiler/lib/connected_traceme.h"
 #include "tsl/profiler/lib/context_types.h"
@@ -147,7 +149,7 @@ class CommonAsyncHostToDeviceTransferManager
       TF_ASSIGN_OR_RETURN(
           auto raw_buffer,
           client->AllocateRawBuffer(memory_space, on_device_bytes_count,
-                                    allocation_event));
+                                    /*retry_on_oom=*/true, allocation_event));
       TF_ASSIGN_OR_RETURN(auto buffer,
                           client->DefineBuffer(device_shape, raw_buffer,
                                                {std::move(definition_event)},
