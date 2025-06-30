@@ -29,6 +29,7 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "xla/comparison_util.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/analysis/hlo_alias_analysis.h"
 #include "xla/hlo/analysis/hlo_dataflow_analysis.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -59,14 +60,16 @@ using ::testing::ElementsAreArray;
 using ::testing::HasSubstr;
 using ::testing::StrEq;
 
-class MinimumMemoryForSequenceTest : public HloHardwareIndependentTestBase {};
+class MinimumMemoryForSequenceTest : public HloHardwareIndependentTestBase {
+ protected:
+  AliasInfo alias_info_;
+};
 
 TEST_F(MinimumMemoryForSequenceTest, MultiComputation) {
   auto module = CreateNewVerifiedModule();
-  const Shape scalar_shape =
-      ShapeUtil::MakeValidatedShape(xla::F32, {}).value();
+  const Shape scalar_shape = ShapeUtil::MakeShape(xla::F32, {});
   const Shape tuple_shape =
-      ShapeUtil::MakeValidatedTupleShape({scalar_shape, scalar_shape}).value();
+      ShapeUtil::MakeTupleShape({scalar_shape, scalar_shape});
 
   auto cond_builder = HloComputation::Builder("WhileCond");
   // Tuple param: 24 bytes (each elem has 8 byte pointer, 4 byte element)
@@ -77,10 +80,9 @@ TEST_F(MinimumMemoryForSequenceTest, MultiComputation) {
   HloInstruction* cond_data = cond_builder.AddInstruction(
       HloInstruction::CreateGetTupleElement(scalar_shape, cond_param, 1));
   // Free cond_param[] (16 bytes), Alloc PRED[] (1 byte)
-  HloInstruction* cond_lt =
-      cond_builder.AddInstruction(HloInstruction::CreateCompare(
-          ShapeUtil::MakeValidatedShape(PRED, {}).value(), cond_iter, cond_data,
-          ComparisonDirection::kLt));
+  HloInstruction* cond_lt = cond_builder.AddInstruction(
+      HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), cond_iter,
+                                    cond_data, ComparisonDirection::kLt));
   HloComputation* cond_computation =
       module->AddEmbeddedComputation(cond_builder.Build());
 
@@ -152,9 +154,9 @@ TEST_F(MinimumMemoryForSequenceTest, SubcomputationAccounting) {
   // }
 
   auto module = CreateNewVerifiedModule();
-  const Shape r0f32 = ShapeUtil::MakeValidatedShape(F32, {}).value();
-  const Shape r1f32 = ShapeUtil::MakeValidatedShape(F32, {4}).value();
-  const Shape r2f32 = ShapeUtil::MakeValidatedShape(F32, {2, 4}).value();
+  const Shape r0f32 = ShapeUtil::MakeShape(F32, {});
+  const Shape r1f32 = ShapeUtil::MakeShape(F32, {4});
+  const Shape r2f32 = ShapeUtil::MakeShape(F32, {2, 4});
 
   // reshape(slice(param)) != 0
   // Needs 5 bytes
@@ -163,16 +165,14 @@ TEST_F(MinimumMemoryForSequenceTest, SubcomputationAccounting) {
       HloInstruction::CreateParameter(0, r1f32, "cond_param"));
   HloInstruction* slice =
       cond_builder.AddInstruction(HloInstruction::CreateSlice(
-          ShapeUtil::MakeValidatedShape(F32, {1}).value(), cond_param, {0}, {1},
-          {1}));
+          ShapeUtil::MakeShape(F32, {1}), cond_param, {0}, {1}, {1}));
   HloInstruction* reshape =
       cond_builder.AddInstruction(HloInstruction::CreateReshape(r0f32, slice));
   HloInstruction* zero = cond_builder.AddInstruction(
       HloInstruction::CreateConstant(LiteralUtil::CreateR0<float>(0)));
-  HloInstruction* cond_comparison =
-      cond_builder.AddInstruction(HloInstruction::CreateCompare(
-          ShapeUtil::MakeValidatedShape(PRED, {}).value(), reshape, zero,
-          ComparisonDirection::kNe));
+  HloInstruction* cond_comparison = cond_builder.AddInstruction(
+      HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), reshape,
+                                    zero, ComparisonDirection::kNe));
   auto cond_computation = module->AddEmbeddedComputation(cond_builder.Build());
 
   // param - 1
@@ -237,7 +237,7 @@ TEST_F(MinimumMemoryForSequenceTest, SubcomputationAccounting) {
   // so we don't double count.
   EXPECT_EQ(64, HeapSimulator::MinimumMemoryForComputation(
                     *entry_computation, schedule.sequence(entry_computation),
-                    *alias_analysis, size_fn)
+                    *alias_analysis, &alias_info_, size_fn)
                     .value());
 }
 
@@ -346,7 +346,7 @@ class HeapSimulatorTracker {
     };
     auto algorithm = std::make_unique<HeapCallRecorder>(&actual_calls_);
     result_ = HeapSimulator::Run(std::move(algorithm), *module_, schedule,
-                                 *alias_analysis_, size_fn)
+                                 *alias_analysis_, &alias_info_, size_fn)
                   .value();
   }
 
@@ -416,12 +416,13 @@ class HeapSimulatorTracker {
     result_ =
         HeapSimulator::Run(std::move(algorithm), *module_->entry_computation(),
                            HloInstructionSequence(instruction_sequence),
-                           *alias_analysis_, zero_size, options)
+                           *alias_analysis_, &alias_info_, zero_size, options)
             .value();
   }
 
   std::unique_ptr<HloModule> module_;
   std::unique_ptr<HloAliasAnalysis> alias_analysis_;
+  AliasInfo alias_info_;
   CallSequence actual_calls_;
   HeapSimulator::Result<HloValue> result_;
 };
@@ -432,8 +433,9 @@ class HeapSimulatorTest : public HloHardwareIndependentTestBase {
   ~HeapSimulatorTest() override {}
 
   // Shapes for use in the examples.
-  Shape f32scalar_ = ShapeUtil::MakeValidatedShape(xla::F32, {}).value();
-  Shape f32vec4_ = ShapeUtil::MakeValidatedShape(F32, {4}).value();
+  Shape f32scalar_ = ShapeUtil::MakeShape(xla::F32, {});
+  Shape f32vec4_ = ShapeUtil::MakeShape(F32, {4});
+  AliasInfo alias_info_;
 };
 
 TEST_F(HeapSimulatorTest, ScalarConstant) {
@@ -550,7 +552,7 @@ TEST_F(HeapSimulatorTest, FusionOutputsOnlyShareOnce) {
       module->AddEmbeddedComputation(fusion_builder.Build());
 
   auto fusion = builder.AddInstruction(HloInstruction::CreateFusion(
-      ShapeUtil::MakeValidatedTupleShape({f32vec4_, f32vec4_}).value(),
+      ShapeUtil::MakeTupleShape({f32vec4_, f32vec4_}),
       HloInstruction::FusionKind::kLoop, {negate}, fusion_computation));
 
   auto element0 = builder.AddInstruction(
@@ -624,7 +626,7 @@ TEST_F(HeapSimulatorTest, FusionOutputsOnlyShareOnceOutputShortLived) {
       module->AddEmbeddedComputation(fusion_builder.Build());
 
   auto fusion = builder.AddInstruction(HloInstruction::CreateFusion(
-      ShapeUtil::MakeValidatedTupleShape({f32vec4_, f32vec4_}).value(),
+      ShapeUtil::MakeTupleShape({f32vec4_, f32vec4_}),
       HloInstruction::FusionKind::kLoop, {negate}, fusion_computation));
 
   auto element1 = builder.AddInstruction(
@@ -677,7 +679,7 @@ TEST_F(HeapSimulatorTest, BufferReusedOnce) {
   auto neg = builder.AddInstruction(
       HloInstruction::CreateUnary(f32vec4_, HloOpcode::kNegate, a_param));
   auto fusion = builder.AddInstruction(HloInstruction::CreateFusion(
-      ShapeUtil::MakeValidatedTupleShape({f32vec4_, f32vec4_}).value(),
+      ShapeUtil::MakeTupleShape({f32vec4_, f32vec4_}),
       HloInstruction::FusionKind::kLoop, {neg}, fusion_computation));
   tracker.module()->AddEntryComputation(builder.Build());
 
@@ -908,10 +910,9 @@ TEST_F(HeapSimulatorTest, IndependentTupleElements) {
 TEST_F(HeapSimulatorTest, WholeModule) {
   HeapSimulatorTracker tracker(TestName());
 
-  const Shape scalar_shape =
-      ShapeUtil::MakeValidatedShape(xla::F32, {}).value();
+  const Shape scalar_shape = ShapeUtil::MakeShape(xla::F32, {});
   const Shape tuple_shape =
-      ShapeUtil::MakeValidatedTupleShape({scalar_shape, scalar_shape}).value();
+      ShapeUtil::MakeTupleShape({scalar_shape, scalar_shape});
 
   auto cond_builder = HloComputation::Builder("WhileCond");
   HloInstruction* cond_param = cond_builder.AddInstruction(
@@ -920,10 +921,9 @@ TEST_F(HeapSimulatorTest, WholeModule) {
       HloInstruction::CreateGetTupleElement(scalar_shape, cond_param, 0));
   HloInstruction* cond_data = cond_builder.AddInstruction(
       HloInstruction::CreateGetTupleElement(scalar_shape, cond_param, 1));
-  HloInstruction* cond_lt =
-      cond_builder.AddInstruction(HloInstruction::CreateCompare(
-          ShapeUtil::MakeValidatedShape(PRED, {}).value(), cond_iter, cond_data,
-          ComparisonDirection::kLt));
+  HloInstruction* cond_lt = cond_builder.AddInstruction(
+      HloInstruction::CreateCompare(ShapeUtil::MakeShape(PRED, {}), cond_iter,
+                                    cond_data, ComparisonDirection::kLt));
   HloComputation* cond_computation =
       tracker.module()->AddEmbeddedComputation(cond_builder.Build());
 
@@ -995,7 +995,7 @@ TEST_F(HeapSimulatorTest, AsyncCallImplicitSharding) {
 
   HeapSimulator::Result<HloValue> result =
       HeapSimulator::Run(std::move(algorithm), *module, module->schedule(),
-                         *alias_analysis, size_fn)
+                         *alias_analysis, &alias_info_, size_fn)
           .value();
   for (const auto& [value, chunk] : result.heap_results[0].chunk_map) {
     if (value->instruction()->name() == "dynamic-update-slice") {
@@ -2128,7 +2128,7 @@ class SlicedBufferIntervalTest : public ::testing::Test {
     HloModuleConfig config;
     module_ = std::make_unique<HloModule>("TestModule", config);
 
-    Shape f32vec4 = ShapeUtil::MakeValidatedShape(F32, {4}).value();
+    Shape f32vec4 = ShapeUtil::MakeShape(F32, {4});
 
     auto builder = HloComputation::Builder("TestComputation");
     auto p0 = builder.AddInstruction(
