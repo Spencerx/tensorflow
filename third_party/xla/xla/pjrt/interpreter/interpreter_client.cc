@@ -156,9 +156,9 @@ ExtractInterpreterInputLiteralsFromBuffers(
   for (const Literal* literal : literals) {
     shapes.push_back(literal->shape());
   }
-  auto tupled_arg_literal = std::make_unique<Literal>(
-      ShapeUtil::MakeValidatedTupleShape(shapes).value(),
-      /*allocate_arrays=*/false);
+  auto tupled_arg_literal =
+      std::make_unique<Literal>(ShapeUtil::MakeTupleShape(shapes),
+                                /*allocate_arrays=*/false);
   for (int i = 0; i < literals.size(); ++i) {
     TF_RETURN_IF_ERROR(tupled_arg_literal->MoveFrom(std::move(*literals[i]),
                                                     /*dest_shape_index=*/{i}));
@@ -319,6 +319,14 @@ absl::StatusOr<Literal> InterpreterLoadedExecutable::Evaluate(
   return hlo_evaluator_->Evaluate(computation, arg_literals);
 }
 
+std::optional<PjRtPluginAttributes> InterpreterClient::plugin_attributes()
+    const {
+  PjRtPluginAttributes attributes =
+      PjRtClient::plugin_attributes().value_or(PjRtPluginAttributes());
+  attributes.attributes["serialize_with_sdy"] = true;
+  return attributes;
+}
+
 absl::StatusOr<DeviceAssignment> InterpreterClient::GetDefaultDeviceAssignment(
     int num_replicas, int num_partitions) const {
   if (num_replicas != 1 || num_partitions != 1) {
@@ -331,7 +339,7 @@ absl::StatusOr<DeviceAssignment> InterpreterClient::GetDefaultDeviceAssignment(
 absl::StatusOr<Layout> InterpreterClient::GetDefaultLayout(
     PrimitiveType element_type, absl::Span<const int64_t> dims) {
   // This is all the GenericTransferManager::ChooseCompactLayoutForShape does.
-  Shape shape = ShapeUtil::MakeValidatedShape(element_type, dims).value();
+  Shape shape = ShapeUtil::MakeShape(element_type, dims);
   LayoutUtil::SetToDefaultLayout(&shape);
   return shape.layout();
 }

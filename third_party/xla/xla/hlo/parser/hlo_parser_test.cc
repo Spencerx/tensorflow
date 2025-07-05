@@ -1546,6 +1546,34 @@ ENTRY %test (v1: f32[], v2: f32[3], v3: f32[2,3]) -> ((f32[], f32[3]), f32[2,3])
 
 )"
 },
+
+{
+"OriginalValueRecoveryTable",
+R"(HloModule test, entry_computation_layout={(f32[192]{0})->f32[1,17,17,192]{3,2,1,0}}, origin_recovery_table={
+  {"broadcast.2340"} : {"reshape.2341"},
+  "
+    ENTRY %recovery_computation.3 (p.1: f32[1,192]) -> f32[1,1,1,192] {
+    %p.1 = f32[1,192]{1,0} parameter(0)
+    ROOT %reshape.2 = f32[1,1,1,192]{3,2,1,0} reshape(%p.1)
+  }
+  "
+  {"reshape.2341"} : {"placeholder_reshape.201"},
+  "
+    ENTRY %recovery_computation.3 (p.1: f32[192]) -> f32[1,192] {
+    %p.1 = f32[192]{0} parameter(0)
+    ROOT %reshape.2 = f32[1,192]{1,0} reshape(%p.1)
+  }
+  "
+}
+
+
+ENTRY %main (Arg_0: f32[192]) -> f32[1,17,17,192] {
+  %Arg_0 = f32[192]{0} parameter(0)
+  ROOT %broadcast.2342 = f32[1,17,17,192]{3,2,1,0} broadcast(f32[192]{0} %Arg_0), dimensions={3}, origin={{"broadcast.2342"}}
+}
+
+)"
+},
 });
   // clang-format on
 }
@@ -4482,7 +4510,7 @@ ENTRY %entrycomp (p: f32[2,2]) -> f32[2,2] {
 TEST_F(HloParserTest, ParseShapeStringR2F32) {
   std::string shape_string = "f32[123,456]";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
-  Shape expected = ShapeUtil::MakeValidatedShape(F32, {123, 456}).value();
+  Shape expected = ShapeUtil::MakeShape(F32, {123, 456});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4491,9 +4519,8 @@ TEST_F(HloParserTest, ParseShapeStringR2F32) {
 TEST_F(HloParserTest, ParseShapeStringUnbounded) {
   std::string shape_string = "f32[?,784]";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
-  Shape expected = ShapeUtil::MakeValidatedShape(
-                       F32, {Shape::kUnboundedSize, 784}, {true, false})
-                       .value();
+  Shape expected =
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784}, {true, false});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4502,10 +4529,9 @@ TEST_F(HloParserTest, ParseShapeStringUnbounded) {
 TEST_F(HloParserTest, ParseShapeStringTupleOfArrays) {
   std::string shape_string = "(f32[1572864],s8[5120,1024])";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
-  Shape expected = ShapeUtil::MakeValidatedTupleShape(
-                       {ShapeUtil::MakeShape(F32, {1572864}),
-                        ShapeUtil::MakeShape(S8, {5120, 1024})})
-                       .value();
+  Shape expected =
+      ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(F32, {1572864}),
+                                 ShapeUtil::MakeShape(S8, {5120, 1024})});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4514,16 +4540,13 @@ TEST_F(HloParserTest, ParseShapeStringTupleOfArrays) {
 TEST_F(HloParserTest, ParseShapeStringNestedTuple) {
   std::string shape_string = "(f32[1],(f32[2], token[]), opaque[], f32[3])";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
-  Shape expected =
-      ShapeUtil::MakeValidatedTupleShape(
-          {
-              ShapeUtil::MakeShape(F32, {1}),
-              ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(F32, {2}),
-                                         ShapeUtil::MakeTokenShape()}),
-              ShapeUtil::MakeOpaqueShape(),
-              ShapeUtil::MakeShape(F32, {3}),
-          })
-          .value();
+  Shape expected = ShapeUtil::MakeTupleShape({
+      ShapeUtil::MakeShape(F32, {1}),
+      ShapeUtil::MakeTupleShape(
+          {ShapeUtil::MakeShape(F32, {2}), ShapeUtil::MakeTokenShape()}),
+      ShapeUtil::MakeOpaqueShape(),
+      ShapeUtil::MakeShape(F32, {3}),
+  });
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4686,8 +4709,7 @@ TEST_F(HloParserTest, ParseInvalidShapeString) {
 TEST_F(HloParserTest, ParseDynamicArray) {
   std::string shape_string = "f32[123,<=456]";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
-  Shape expected =
-      ShapeUtil::MakeValidatedShape(F32, {123, 456}, {false, true}).value();
+  Shape expected = ShapeUtil::MakeShape(F32, {123, 456}, {false, true});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4696,10 +4718,9 @@ TEST_F(HloParserTest, ParseDynamicArray) {
 TEST_F(HloParserTest, ParseDynamicTuple) {
   std::string shape_string = "(f32[42], u32[<=123,<=456])";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
-  Shape expected = ShapeUtil::MakeValidatedTupleShape(
-                       {ShapeUtil::MakeShape(F32, {42}),
-                        ShapeUtil::MakeShape(U32, {123, 456}, {true, true})})
-                       .value();
+  Shape expected = ShapeUtil::MakeTupleShape(
+      {ShapeUtil::MakeShape(F32, {42}),
+       ShapeUtil::MakeShape(U32, {123, 456}, {true, true})});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4857,7 +4878,7 @@ ENTRY InferTernaryShape {
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(text));
   EXPECT_TRUE(ShapeUtil::Equal(
       module->entry_computation()->ComputeProgramShape().result(),
-      ShapeUtil::MakeValidatedScalarShape(S32).value()));
+      ShapeUtil::MakeScalarShape(S32)));
 }
 
 TEST_F(HloParserTest, TupleTypo) {
@@ -4884,7 +4905,7 @@ ENTRY InferDotShape {
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(text));
   EXPECT_TRUE(ShapeUtil::Equal(
       module->entry_computation()->ComputeProgramShape().result(),
-      ShapeUtil::MakeValidatedShape(F32, {2}, {0}).value()));
+      ShapeUtil::MakeShape(F32, {2}, {0})));
 }
 
 TEST_F(HloParserTest, InferSparseDotShape) {
@@ -4899,7 +4920,7 @@ ENTRY InferSparseDotShape {
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(text));
   EXPECT_TRUE(ShapeUtil::Equal(
       module->entry_computation()->ComputeProgramShape().result(),
-      ShapeUtil::MakeValidatedShape(F32, {2}, {0}).value()));
+      ShapeUtil::MakeShape(F32, {2}, {0})));
 }
 
 TEST_F(HloParserTest, InferTupleShape) {
@@ -4940,7 +4961,7 @@ ENTRY InferUnaryShape {
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(text));
   EXPECT_TRUE(ShapeUtil::Equal(
       module->entry_computation()->ComputeProgramShape().result(),
-      ShapeUtil::MakeValidatedScalarShape(F32).value()));
+      ShapeUtil::MakeScalarShape(F32)));
 }
 
 TEST_F(HloParserTest, CheckAliasPassthroughParams) {
@@ -5689,6 +5710,31 @@ ENTRY %test {
 
   ExpectHasSubstr(module->ToString(HloPrintOptions::ShortParsable()),
                   "origin={(({}, {\"v2\"}), {\"v3\"})}");
+}
+
+TEST_F(HloParserTest, DeduplicateOriginalValues) {
+  const std::string hlo_string =
+      R"(HloModule test, entry_computation_layout={(s32[])->s32[]}
+
+%fused_computation (param_0: s32[]) -> s32[] {
+  %param_0 = s32[] parameter(0)
+  %constant = s32[] constant(32)
+  ROOT %add = s32[] add(%param_0, %constant), origin={{"concatenate"}}
+}
+
+ENTRY %test (Arg_0: s32[]) -> s32[] {
+  %Arg_0 = s32[] parameter(0), origin={{"Arg_0"}}
+  ROOT %pad_add_fusion = s32[] fusion(%Arg_0), kind=kLoop, calls=%fused_computation, origin={{"concatenate"}}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(hlo_string));
+
+  auto fusion_inst = static_cast<HloFusionInstruction*>(
+      module->entry_computation()->root_instruction());
+
+  ASSERT_EQ(
+      fusion_inst->original_value(),
+      fusion_inst->called_computation()->root_instruction()->original_value());
 }
 
 TEST_F(HloParserTest, TranscendentalAccuracyMode) {

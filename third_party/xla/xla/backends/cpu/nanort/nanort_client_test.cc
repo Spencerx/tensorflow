@@ -405,6 +405,37 @@ TEST(NanoRtClientTest, CustomCallTest) {
   EXPECT_EQ(result, 3.0f);
 }
 
+TEST(NanoRtClientTest, ProgramShapeTestInt4) {
+  constexpr absl::string_view kModuleStr = R"(
+    HloModule int4_function
+
+    ENTRY %main.4 (Arg_0.1: s4[4], Arg_1.2: s4[4]) -> s4[4] {
+      %Arg_0.1 = s4[4]{0} parameter(0)
+      %Arg_1.2 = s4[4]{0} parameter(1)
+      ROOT %add.3 = s4[4]{0} add(%Arg_0.1, %Arg_1.2)
+  }
+  )";
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnUnverifiedModule(kModuleStr));
+  XlaComputation computation(module->ToProto());
+
+  NanoRtClient client;
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<NanoRtExecutable> executable,
+                          client.Compile(computation));
+  ASSERT_TRUE(executable->program_shape().has_value());
+
+  auto program_shape = executable->program_shape();
+
+  for (size_t i = 0; i < program_shape->parameters_size(); ++i) {
+    EXPECT_EQ(program_shape->parameters()[i].layout().element_size_in_bits(),
+              4);
+  }
+
+  EXPECT_EQ(
+      executable->program_shape()->result().layout().element_size_in_bits(), 4);
+}
+
 //===----------------------------------------------------------------------===//
 // Performance benchmarks below
 //===----------------------------------------------------------------------===//
@@ -412,10 +443,8 @@ TEST(NanoRtClientTest, CustomCallTest) {
 static absl::StatusOr<XlaComputation> CreateAddScalarsComputation() {
   XlaBuilder b("add");
 
-  auto p0 =
-      Parameter(&b, 0, ShapeUtil::MakeValidatedShape(F32, {}).value(), "p0");
-  auto p1 =
-      Parameter(&b, 1, ShapeUtil::MakeValidatedShape(F32, {}).value(), "p1");
+  auto p0 = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {}), "p0");
+  auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(F32, {}), "p1");
   Add(p0, p1);
 
   return b.Build();
@@ -424,10 +453,8 @@ static absl::StatusOr<XlaComputation> CreateAddScalarsComputation() {
 static absl::StatusOr<XlaComputation> CreateFibonacciComputation() {
   XlaBuilder b("fib");
 
-  auto p0 =
-      Parameter(&b, 0, ShapeUtil::MakeValidatedShape(F32, {}).value(), "p0");
-  auto p1 =
-      Parameter(&b, 1, ShapeUtil::MakeValidatedShape(F32, {}).value(), "p1");
+  auto p0 = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {}), "p0");
+  auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(F32, {}), "p1");
 
   std::vector<XlaOp> vars = {p0, p1};
 

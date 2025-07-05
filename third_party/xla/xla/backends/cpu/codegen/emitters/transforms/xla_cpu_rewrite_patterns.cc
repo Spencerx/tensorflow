@@ -16,6 +16,7 @@ limitations under the License.
 #include "xla/backends/cpu/codegen/emitters/transforms/xla_cpu_rewrite_patterns.h"
 
 #include <cstdint>
+#include <string>
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
@@ -25,6 +26,7 @@ limitations under the License.
 #include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -102,8 +104,13 @@ struct LowerLoadOp : public mlir::OpRewritePattern<LoadOp> {
         mlir::LLVM::GEPNoWrapFlags::inbounds);
     auto arg_ptr = b.create<mlir::LLVM::LoadOp>(ptr, arg_gep);
     arg_ptr.setInvariant(true);
-    arg_ptr->setAttr(mlir::LLVM::LLVMDialect::getAlignAttrName(),
-                     b.getIndexAttr(32));
+
+    if (auto dereferenceable = op->getAttrOfType<mlir::IntegerAttr>(
+            mlir::LLVM::LLVMDialect::getDereferenceableAttrName())) {
+      arg_ptr.setDereferenceable(
+          rewriter.getAttr<mlir::LLVM::DereferenceableAttr>(
+              dereferenceable.getInt(), false));
+    }
 
     auto arg_ptr_cast = b.create<mlir::UnrealizedConversionCastOp>(
         op.getLoc(), op->getResult(0).getType(), arg_ptr.getResult());
@@ -220,11 +227,13 @@ class WrapEntryWithCallFrame
 
     mlir::ImplicitLocOpBuilder builder(op.getLoc(), rewriter);
 
+    std::string kernel_name(op.getName());
+    op.setName(absl::StrCat(kernel_name, "_wrapped"));
+
     auto call_frame_type = CallFrameType::get(context);
     auto error_type = ErrorType::get(context);
     mlir::func::FuncOp kernel_func = builder.create<mlir::func::FuncOp>(
-        absl::StrCat(absl::string_view(op.getName()), "_kernel"),
-        rewriter.getFunctionType({call_frame_type}, {error_type}));
+        kernel_name, rewriter.getFunctionType({call_frame_type}, {error_type}));
 
     builder.setInsertionPointToStart(kernel_func.addEntryBlock());
 
@@ -232,10 +241,17 @@ class WrapEntryWithCallFrame
 
     mlir::BlockArgument call_frame_arg = kernel_func.getArgument(0);
     llvm::SmallVector<mlir::Value> call_args;
+    mlir::ArrayAttr arg_attrs = op.getArgAttrsAttr();
     for (const auto& [idx, arg] :
          llvm::enumerate(op.getArguments().drop_back(3))) {
-      call_args.push_back(
-          builder.create<LoadOp>(arg.getType(), call_frame_arg, idx));
+      mlir::DictionaryAttr arg_attr =
+          arg_attrs ? mlir::dyn_cast<mlir::DictionaryAttr>(arg_attrs[idx])
+                    : nullptr;
+      LoadOp load = builder.create<LoadOp>(arg.getType(), call_frame_arg, idx);
+      if (arg_attr) {
+        load->setAttrs(arg_attr);
+      }
+      call_args.push_back(load);
     }
     call_args.append(GetWorkGroupIds(call_frame_arg, builder));
 
@@ -311,14 +327,15 @@ class WrapEntryWithCallFrame
           mlir::LLVM::GEPNoWrapFlags::inbounds);
       auto workgroup_dim_load =
           builder.create<mlir::LLVM::LoadOp>(i64_ty, workgroup_dim_gep);
+      workgroup_dim_load.setInvariant(true);
 
       mlir::Value workgroup_dim = workgroup_dim_load.getResult();
       auto index_ty = builder.getIntegerType(
           mlir::DataLayout::closest(builder.getInsertionBlock()->getParentOp())
               .getTypeSizeInBits(mlir::IndexType::get(context)));
       if (index_ty != i64_ty) {
-        workgroup_dim =
-            builder.create<mlir::LLVM::TruncOp>(index_ty, workgroup_dim);
+        workgroup_dim = builder.create<mlir::LLVM::TruncOp>(
+            index_ty, workgroup_dim, mlir::LLVM::IntegerOverflowFlags::nsw);
       }
       auto workgroup_dim_cast =
           builder.create<mlir::UnrealizedConversionCastOp>(

@@ -58,9 +58,8 @@ absl::Status RewriteLayoutWithShardedShape(
     for (int64_t i = 0; i < xla_shape->dimensions().size(); ++i) {
       dimensions[i] = limit[i] - offset[i];
     }
-    xla::Shape per_device_xla_shape = xla::ShapeUtil::MakeValidatedShape(
-                                          xla_shape->element_type(), dimensions)
-                                          .value();
+    xla::Shape per_device_xla_shape =
+        xla::ShapeUtil::MakeShape(xla_shape->element_type(), dimensions);
     TF_ASSIGN_OR_RETURN(auto layout_preference,
                         layout_preference_fn
                             ? layout_preference_fn(per_device_xla_shape)
@@ -87,6 +86,7 @@ absl::StatusOr<xla::XlaOp> ReshapeWithCorrectRepresentationAndSharding(
     std::vector<xla::XlaOp> elements;
     for (int i = 0; i < original_shape.tuple_shapes().size(); ++i) {
       auto subsharding = sharding ? sharding->tuple_shardings(i) : sharding;
+      xla::XlaScopedShardingAssignment scoped_sharding(builder, subsharding);
       TF_ASSIGN_OR_RETURN(
           auto element,
           ReshapeWithCorrectRepresentationAndSharding(
@@ -95,6 +95,7 @@ absl::StatusOr<xla::XlaOp> ReshapeWithCorrectRepresentationAndSharding(
               shape_representation_fn, subsharding, fast_mem));
       elements.push_back(element);
     }
+    xla::XlaScopedShardingAssignment scoped_sharding(builder, sharding);
     return xla::Tuple(builder, elements);
   }
   if (!original_shape.IsArray()) return original;
