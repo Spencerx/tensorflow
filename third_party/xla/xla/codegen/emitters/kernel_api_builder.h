@@ -24,6 +24,7 @@ limitations under the License.
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
+#include "xla/codegen/emitters/computation_partitioner.h"
 #include "xla/codegen/emitters/kernel_arguments.h"
 #include "xla/hlo/analysis/indexing_map.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -45,17 +46,21 @@ absl::StatusOr<mlir::func::FuncOp> EmitKernelApi(
     absl::string_view entry_function_name);
 
 void SetIndexDataLayout(mlir::ModuleOp module,
-                        const HloInstruction& hlo_instruction);
+                        const HloInstruction& hlo_instruction,
+                        bool force_64_bit = false);
 
 // Get the default indexing map for the given work dimensions, unroll factor,
 // and output shape.
 IndexingMap GetDefaultWorkItemIndexingMap(const WorkDimensions& work_dimensions,
-                                          int unroll_factor, const Shape& shape,
+                                          const Shape& shape,
                                           mlir::MLIRContext* ctx);
 
 // Emits the work group id ops annotated with the range of each dimension.
 llvm::SmallVector<mlir::Value> EmitWorkGroupIds(
     mlir::ImplicitLocOpBuilder& builder, const NumWorkGroups& num_work_groups);
+
+absl::StatusOr<CallTargetProvider> EmitPartitionedComputations(
+    mlir::ModuleOp module, const PartitionedComputations& computations);
 
 }  // namespace xla::emitters
 

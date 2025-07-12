@@ -156,9 +156,9 @@ ExtractInterpreterInputLiteralsFromBuffers(
   for (const Literal* literal : literals) {
     shapes.push_back(literal->shape());
   }
-  auto tupled_arg_literal = std::make_unique<Literal>(
-      ShapeUtil::MakeValidatedTupleShape(shapes).value(),
-      /*allocate_arrays=*/false);
+  auto tupled_arg_literal =
+      std::make_unique<Literal>(ShapeUtil::MakeTupleShape(shapes),
+                                /*allocate_arrays=*/false);
   for (int i = 0; i < literals.size(); ++i) {
     TF_RETURN_IF_ERROR(tupled_arg_literal->MoveFrom(std::move(*literals[i]),
                                                     /*dest_shape_index=*/{i}));
@@ -188,7 +188,7 @@ absl::StatusOr<std::vector<std::vector<std::unique_ptr<PjRtBuffer>>>>
 InterpreterLoadedExecutable::Execute(
     absl::Span<const std::vector<PjRtBuffer*>> argument_handles,
     const ExecuteOptions& options,
-    std::optional<std::vector<PjRtFuture<>>>& returned_futures) {
+    std::optional<std::vector<PjRtFuture<>>>& returned_futures) const {
   if (device_assignment_ == nullptr) {
     return absl::InvalidArgumentError(
         "Execute expects a non-null device_assignment");
@@ -227,7 +227,7 @@ absl::StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
 InterpreterLoadedExecutable::ExecuteSharded(
     absl::Span<PjRtBuffer* const> argument_handles, PjRtDevice* device,
     const ExecuteOptions& options, std::optional<PjRtFuture<>>& returned_future,
-    bool fill_future) {
+    bool fill_future) const {
   if (device_assignment_ == nullptr) {
     return absl::InvalidArgumentError(
         "ExecuteSharded expects a non-null device_assignment");
@@ -307,16 +307,24 @@ absl::StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
 InterpreterLoadedExecutable::ExecutePortable(
     absl::Span<PjRtBuffer* const> argument_handles, PjRtDevice* device,
     const ExecuteOptions& options, std::optional<PjRtFuture<>>& returned_future,
-    bool fill_future) {
+    bool fill_future) const {
   return absl::UnimplementedError("ExecutePortable is not implemented");
 }
 
 absl::StatusOr<Literal> InterpreterLoadedExecutable::Evaluate(
     const HloComputation& computation,
-    absl::Span<const Literal* const> arg_literals) {
+    absl::Span<const Literal* const> arg_literals) const {
   absl::MutexLock lock(&hlo_evaluator_lock_);
   hlo_evaluator_->ResetVisitStates();
   return hlo_evaluator_->Evaluate(computation, arg_literals);
+}
+
+std::optional<PjRtPluginAttributes> InterpreterClient::plugin_attributes()
+    const {
+  PjRtPluginAttributes attributes =
+      PjRtClient::plugin_attributes().value_or(PjRtPluginAttributes());
+  attributes.attributes["serialize_with_sdy"] = true;
+  return attributes;
 }
 
 absl::StatusOr<DeviceAssignment> InterpreterClient::GetDefaultDeviceAssignment(
@@ -331,7 +339,7 @@ absl::StatusOr<DeviceAssignment> InterpreterClient::GetDefaultDeviceAssignment(
 absl::StatusOr<Layout> InterpreterClient::GetDefaultLayout(
     PrimitiveType element_type, absl::Span<const int64_t> dims) {
   // This is all the GenericTransferManager::ChooseCompactLayoutForShape does.
-  Shape shape = ShapeUtil::MakeValidatedShape(element_type, dims).value();
+  Shape shape = ShapeUtil::MakeShape(element_type, dims);
   LayoutUtil::SetToDefaultLayout(&shape);
   return shape.layout();
 }

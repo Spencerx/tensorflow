@@ -32,6 +32,7 @@ limitations under the License.
 #include "xla/codegen/kernel_definition.h"
 #include "xla/codegen/llvm_ir_kernel_source.h"
 #include "xla/codegen/mlir_kernel_source.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/analysis/hlo_ordering.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instructions.h"
@@ -72,8 +73,10 @@ class CpuFusionEmitterTest : public HloHardwareIndependentTestBase {
         [](const BufferValue& buffer) {
           return CpuExecutable::ShapeSizeBytes(buffer.shape());
         },
-        [](LogicalBuffer::Color) { return /*alignment=*/1; });
+        &alias_info_, [](LogicalBuffer::Color) { return /*alignment=*/1; });
   }
+
+  AliasInfo alias_info_;
 };
 
 static constexpr absl::string_view kScatterHlo = R"(
@@ -140,8 +143,8 @@ TEST_F(CpuFusionEmitterTest, ScatterMlir) {
 TEST_F(CpuFusionEmitterTest, ScatterLlvm) {
   constexpr absl::string_view kExpected = R"(
     CHECK-NOT:  @wrapped_scatter_entry(
-    CHECK-NOT:  @wrapped_scatter(
-    CHECK:      @wrapped_scatter_kernel(
+    CHECK-NOT:  @wrapped_scatter_kernel(
+    CHECK:      @wrapped_scatter(
     CHECK:      uwtable "frame-pointer"="all"
     CHECK-SAME: "prefer-vector-width"="512"
   )";
@@ -159,7 +162,7 @@ TEST_F(CpuFusionEmitterTest, ScatterLlvm) {
   TF_ASSERT_OK_AND_ASSIGN(KernelDefinition kernel_definition,
                           emitter.EmitKernelDefinition());
   auto [spec, source] = std::move(kernel_definition).ReleaseStorage();
-  FusionCompiler compiler(FusionCompiler::Options{512});
+  FusionCompiler compiler(FusionCompiler::Options{512, 1, true});
   TF_ASSERT_OK_AND_ASSIGN(LlvmIrKernelSource llvm_source,
                           compiler.Compile(std::move(source)));
   auto llvm_dump = llvm_source.ToString();

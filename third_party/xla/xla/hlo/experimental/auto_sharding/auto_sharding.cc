@@ -48,6 +48,7 @@ limitations under the License.
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "absl/types/span.h"
+#include "xla/hlo/analysis/alias_info.h"
 #include "xla/hlo/analysis/hlo_alias_analysis.h"
 #include "xla/hlo/experimental/auto_sharding/auto_sharding_cost_graph.h"
 #include "xla/hlo/experimental/auto_sharding/auto_sharding_device_mesh.h"
@@ -663,8 +664,7 @@ void GenerateOutfeedStrategy(const HloInstruction* ins, const Shape& shape,
     for (int i = 0; i < ins->operand_count(); ++i) {
       operand_shapes[i] = ins->operand(i)->shape();
     }
-    auto all_operands_tuple_shape =
-        ShapeUtil::MakeValidatedTupleShape(operand_shapes).value();
+    auto all_operands_tuple_shape = ShapeUtil::MakeTupleShape(operand_shapes);
     auto get_input_sharding = [&](int index) {
       auto sharding = ins->sharding();
       if (sharding.IsTuple()) {
@@ -1998,9 +1998,7 @@ CreateAutoShardingSolverRequestAndCallSolver(
   }
 
   const auto converted_problem = ConvertToProblem(request);
-  const auto converted_request = ConvertToSolverRequest(converted_problem);
-  return FormulateAndSolveMIPFromSolverRequest(converted_request,
-                                               GetParams(request));
+  return FormulateAndSolveMIPFromProblem(converted_problem, GetParams(request));
 }
 
 void CheckHloSharding(
@@ -2404,7 +2402,7 @@ absl::Status SetHloShardingPostProcessing(
           inst->operand(0)->shape().tuple_shapes().end());
       tuple_elements_shape.push_back(inst->operand(1)->shape());
       Shape output_tuple_sharding_shape =
-          ShapeUtil::MakeValidatedTupleShape(tuple_elements_shape).value();
+          ShapeUtil::MakeTupleShape(tuple_elements_shape);
       ShapeTree<HloSharding> output_tuple_sharding(output_tuple_sharding_shape,
                                                    Undefined());
       size_t i = 0;
@@ -2803,7 +2801,7 @@ void RecoverShardingsFromPartialMesh(
               ins->operand(0)->shape().tuple_shapes().end());
           tuple_elements_shape.push_back(ins->operand(1)->shape());
           output_tuple_sharding_shape =
-              ShapeUtil::MakeValidatedTupleShape(tuple_elements_shape).value();
+              ShapeUtil::MakeTupleShape(tuple_elements_shape);
         }
         ShapeTree<HloSharding> output_tuple_sharding(
             output_tuple_sharding_shape, Undefined());
@@ -3513,8 +3511,8 @@ absl::flat_hash_set<const HloInstruction*> ComputeInstructionsToShard(
 }
 
 AutoShardingImplementation::AutoShardingImplementation(
-    const AutoShardingOption& option)
-    : option_(option) {}
+    const AutoShardingOption& option, const AliasInfo* alias_info)
+    : option_(option), alias_info_(alias_info) {}
 
 std::pair<int64_t, int64_t> ReduceMemoryTerms(
     int64_t num_primitives,
@@ -3586,10 +3584,11 @@ absl::StatusOr<bool> AutoShardingImplementation::RunAutoSharding(
   };
   TF_ASSIGN_OR_RETURN(
       HloSchedule schedule,
-      ScheduleModule(module, DFSMemoryScheduler(size_fn), execution_threads));
+      ScheduleModule(module, DFSMemoryScheduler(alias_info_, size_fn),
+                     execution_threads));
   const HloComputation* entry_computation = module->entry_computation();
   std::unique_ptr<HloAliasAnalysis> alias_analysis =
-      HloAliasAnalysis::Run(module).value();
+      HloAliasAnalysis::Run(module, alias_info_).value();
 
   // Handle donated args by resolving them into input-output aliases. While we
   // want to perform this resolution, we do not want to modify the module, which
@@ -3910,8 +3909,9 @@ absl::Status MoveComputationsFromModuleToModule(HloModule* from_module,
   return absl::OkStatus();
 }
 
-AutoSharding::AutoSharding(const AutoShardingOption& option)
-    : option_(option) {}
+AutoSharding::AutoSharding(const AutoShardingOption& option,
+                           const AliasInfo* alias_info)
+    : option_(option), alias_info_(alias_info) {}
 
 absl::Time DumpModuleAndRecordPassStart(const HloModule* module) {
   XLA_VLOG_LINES(6,
@@ -4123,7 +4123,8 @@ absl::StatusOr<bool> AutoSharding::Run(
       }
     }
 
-    auto pass = std::make_unique<AutoShardingImplementation>(this_option);
+    auto pass =
+        std::make_unique<AutoShardingImplementation>(this_option, alias_info_);
     std::unique_ptr<HloModule> module_clone = CloneModule(module);
     absl::StatusOr<bool> pass_result =
         pass->RunAutoSharding(module_clone.get(), replicated_small_tensors,

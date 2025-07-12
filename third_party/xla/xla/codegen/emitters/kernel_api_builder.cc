@@ -16,12 +16,14 @@ limitations under the License.
 #include "xla/codegen/emitters/kernel_api_builder.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/container/flat_hash_map.h"
 #include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -39,6 +41,8 @@ limitations under the License.
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
+#include "xla/codegen/emitters/computation_partitioner.h"
+#include "xla/codegen/emitters/elemental_hlo_to_mlir.h"
 #include "xla/codegen/emitters/ir/xla_ops.h"
 #include "xla/codegen/emitters/kernel_arguments.h"
 #include "xla/codegen/emitters/type_util.h"
@@ -52,8 +56,10 @@ limitations under the License.
 #include "xla/service/buffer_assignment.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla::emitters {
 
@@ -198,8 +204,10 @@ absl::StatusOr<mlir::func::FuncOp> EmitKernelApi(
 }
 
 void SetIndexDataLayout(mlir::ModuleOp module,
-                        const HloInstruction& hlo_instruction) {
-  int index_bitwidth = Needs64BitIndices(&hlo_instruction) ? 64 : 32;
+                        const HloInstruction& hlo_instruction,
+                        bool force_64_bit) {
+  int index_bitwidth =
+      force_64_bit || Needs64BitIndices(&hlo_instruction) ? 64 : 32;
   mlir::OpBuilder b(module->getContext());
   auto index_layout = mlir::DataLayoutEntryAttr::get(
       b.getIndexType(), b.getI32IntegerAttr(index_bitwidth));
@@ -209,12 +217,13 @@ void SetIndexDataLayout(mlir::ModuleOp module,
 }
 
 IndexingMap GetDefaultWorkItemIndexingMap(const WorkDimensions& work_dimensions,
-                                          int unroll_factor, const Shape& shape,
+                                          const Shape& shape,
                                           mlir::MLIRContext* ctx) {
   std::vector<mlir::AffineExpr> output_dims(shape.dimensions().size());
 
   const NumWorkItems& num_work_items = work_dimensions.num_work_items;
   const NumWorkGroups& num_work_groups = work_dimensions.num_work_groups;
+  const auto& work_tile_dimensions = work_dimensions.work_tile_size.dimensions;
 
   std::array<uint64_t, 3> work_item_array{num_work_items.x, num_work_items.y,
                                           num_work_items.z};
@@ -224,8 +233,18 @@ IndexingMap GetDefaultWorkItemIndexingMap(const WorkDimensions& work_dimensions,
       num_work_items.y * num_work_groups.y,
       num_work_items.z * num_work_groups.z};
 
-  uint64_t total_items =
-      total_item_array[0] * total_item_array[1] * total_item_array[2];
+  mlir::AffineExpr c0 = mlir::getAffineConstantExpr(0, ctx);
+  uint64_t stride = 1;
+  mlir::AffineExpr linear_index = c0;
+  // Reverse to get minor to major order.
+  for (auto [idx, dim] : llvm::enumerate(llvm::reverse(work_tile_dimensions))) {
+    uint64_t symbol_index = work_tile_dimensions.size() - idx;
+    auto tile_coord = mlir::getAffineSymbolExpr(symbol_index, ctx);
+    auto tile_component = tile_coord * stride;
+
+    linear_index = linear_index + tile_component;
+    stride *= dim;
+  }
 
   // ParallelLoopEmitter makes some assumptions about launch dimensions and
   // computes the linear index using only the x and y components.
@@ -236,9 +255,6 @@ IndexingMap GetDefaultWorkItemIndexingMap(const WorkDimensions& work_dimensions,
   // This means that this code supports some launch grids that the parallel
   // loop emitter doesn't support. This is safe, since the latter CHECK fails
   // if its assumptions are not fulfilled.
-  mlir::AffineExpr c0 = mlir::getAffineConstantExpr(0, ctx);
-  mlir::AffineExpr linear_index = c0;
-  uint64_t stride = 1;
   for (int i = 0; i < 3; ++i) {
     auto coord = mlir::getAffineDimExpr(kIndexingMapWorkItemDims[i], ctx) +
                  mlir::getAffineDimExpr(kIndexingMapWorkGroupDims[i], ctx) *
@@ -247,11 +263,13 @@ IndexingMap GetDefaultWorkItemIndexingMap(const WorkDimensions& work_dimensions,
     linear_index = linear_index + linear_component;
     stride *= total_item_array[i];
   }
-  mlir::AffineExpr chunk_id = mlir::getAffineSymbolExpr(0, ctx);
-  mlir::AffineExpr unroll_elem_id = mlir::getAffineSymbolExpr(1, ctx);
 
-  linear_index = linear_index * unroll_factor +
-                 chunk_id * unroll_factor * total_items + unroll_elem_id;
+  // The final calculated stride is equal to the total number of items in each
+  // chunk.
+  uint64_t items_per_chunk = stride;
+
+  mlir::AffineExpr chunk_id = mlir::getAffineSymbolExpr(0, ctx);
+  linear_index = chunk_id * items_per_chunk + linear_index;
 
   // See IndexUtil::LinearIndexToMultidimensionalIndex.
   uint64_t divisor = 1;
@@ -266,13 +284,17 @@ IndexingMap GetDefaultWorkItemIndexingMap(const WorkDimensions& work_dimensions,
   std::vector<IndexingMap::Variable> range_vars;
   int64_t num_elements = ShapeUtil::ElementsIn(shape);
   range_vars.push_back(IndexingMap::Variable{
-      {0, CeilOfRatio(num_elements,
-                      static_cast<int64_t>(total_items) * unroll_factor) -
-              1}});
-  range_vars.push_back({0, unroll_factor - 1});
+      {0,
+       CeilOfRatio(num_elements, static_cast<int64_t>(items_per_chunk)) - 1}});
+  for (int64_t dim : work_tile_dimensions) {
+    range_vars.push_back({0, dim - 1});
+  }
+
+  size_t range_vars_size = range_vars.size();
+
   IndexingMap indexing_map(
       mlir::AffineMap::get(/*dimCount=*/6,
-                           /*symbolCount=*/2, output_dims, ctx),
+                           /*symbolCount=*/range_vars_size, output_dims, ctx),
       std::move(dim_vars), std::move(range_vars), /*rt_vars=*/{});
   indexing_map.AddConstraint(linear_index, Interval{0, num_elements - 1});
   indexing_map.Simplify();
@@ -295,6 +317,65 @@ llvm::SmallVector<mlir::Value> EmitWorkGroupIds(
   set_range(work_group_id_z, num_work_groups.z);
 
   return {work_group_id_x, work_group_id_y, work_group_id_z};
+}
+
+static absl::flat_hash_map<const PartitionedComputation::Subgraph*,
+                           mlir::func::FuncOp>
+GetSubgraphToMlirFunction(mlir::ModuleOp module,
+                          const PartitionedComputations& computations) {
+  auto subgraph_to_mlir_fn = computations.DeclareFunctions(module);
+
+  // Erase subgraphs for all heroes that aren't used anywhere else. This is
+  // necessary because the instructions may not have elemental implementations
+  // (scatter).
+  for (const auto& epilogue : computations.epilogues()) {
+    for (const auto& [hero, arity] : epilogue.injected_value_starts) {
+      if (hero->user_count() == 0) {
+        subgraph_to_mlir_fn.extract(&computations.FindSubgraph(hero))
+            .mapped()
+            .erase();
+      }
+    }
+  }
+
+  // The epilogue functions replace the root tuple.
+  auto* root = computations.fusion()->root_instruction();
+  if (root->opcode() == HloOpcode::kTuple &&
+      !computations.epilogues().empty()) {
+    subgraph_to_mlir_fn.extract(&computations.FindSubgraph(root))
+        .mapped()
+        .erase();
+  }
+
+  return subgraph_to_mlir_fn;
+}
+
+absl::StatusOr<CallTargetProvider> EmitPartitionedComputations(
+    mlir::ModuleOp module, const PartitionedComputations& computations) {
+  auto subgraph_to_mlir_fn = GetSubgraphToMlirFunction(module, computations);
+
+  auto call_targets =
+      computations.CreateCallTargetProvider(subgraph_to_mlir_fn);
+  for (const auto& comp : computations.partitioned_computations()) {
+    for (const auto& subgraph : comp.subgraphs()) {
+      if (subgraph_to_mlir_fn.contains(&subgraph)) {
+        TF_RETURN_IF_ERROR(SubgraphToMlirFunction(
+            comp, subgraph, subgraph_to_mlir_fn[&subgraph], call_targets));
+      }
+    }
+  }
+
+  const HloComputation* fused_computation = computations.fusion();
+  for (const auto& epilogue : computations.epilogues()) {
+    if (epilogue.roots.empty()) {
+      continue;
+    }
+    TF_RETURN_IF_ERROR(SubgraphToMlirFunction(
+        computations.FindPartitionedComputation(fused_computation), epilogue,
+        subgraph_to_mlir_fn[&epilogue], call_targets));
+  }
+
+  return call_targets;
 }
 
 }  // namespace xla::emitters

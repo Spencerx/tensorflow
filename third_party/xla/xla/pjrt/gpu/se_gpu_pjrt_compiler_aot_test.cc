@@ -41,6 +41,7 @@ limitations under the License.
 #include "xla/service/compiler.h"
 #include "xla/tests/literal_test_util.h"
 #include "xla/tsl/platform/statusor.h"
+#include "xla/xla_data.pb.h"
 #include "tsl/platform/casts.h"
 
 namespace xla {
@@ -231,8 +232,7 @@ TEST(StreamExecutorGpuCompilerTest, UnloadedExecutableMemoryStats) {
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(S32, {4}, {0});
   Shape host_shape = shape;
   host_shape.mutable_layout()->set_memory_space(Layout::kHostMemorySpace);
-  Shape out_shape =
-      ShapeUtil::MakeValidatedTupleShape({shape, host_shape}).value();
+  Shape out_shape = ShapeUtil::MakeTupleShape({shape, host_shape});
   options.executable_build_options.set_result_layout(out_shape);
 
   TF_ASSERT_OK_AND_ASSIGN(XlaComputation computation,

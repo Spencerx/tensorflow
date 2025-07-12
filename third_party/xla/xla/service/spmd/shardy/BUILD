@@ -28,6 +28,7 @@ cc_library(
         "//xla:shape_util",
         "//xla:util",
         "//xla:xla_data_proto_cc",
+        "//xla:xla_proto_cc",
         "//xla/hlo/ir:hlo",
         "//xla/hlo/pass:hlo_pass",
         "//xla/hlo/transforms/simplifiers:hlo_dce",
@@ -70,7 +71,7 @@ cc_library(
     hdrs = ["utils.h"],
     deps = [
         ":constants",
-        "//xla/mlir_hlo",
+        "//xla/mlir_hlo:hlo_dialect_registration",
         "//xla/service/spmd/shardy/extensions:mhlo_extensions",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
@@ -124,7 +125,7 @@ xla_cc_binary(
     name = "sdy_opt",
     srcs = ["sdy_opt_main.cc"],
     deps = [
-        "//xla/mlir_hlo",
+        "//xla/mlir_hlo:hlo_dialect_registration",
         "//xla/mlir_hlo:stablehlo_extension_passes",
         "//xla/service/spmd/shardy/extensions:mhlo_extensions",
         "//xla/service/spmd/shardy/round_trip_common:export_named_computations",
@@ -137,7 +138,6 @@ xla_cc_binary(
         "//xla/service/spmd/shardy/sdy_round_trip:export_shardy_attrs",
         "//xla/service/spmd/shardy/sdy_round_trip:import_shardy_attrs",
         "//xla/service/spmd/shardy/sdy_round_trip:pipelines",
-        "//xla/service/spmd/shardy/sdy_round_trip:remove_size_one_axes",
         "//xla/service/spmd/shardy/sdy_round_trip:shard_map_export",
         "//xla/service/spmd/shardy/sdy_round_trip:shard_map_import",
         "//xla/service/spmd/shardy/sdy_round_trip/test_utils:stablehlo_to_hlo_to_stablehlo",
